@@ -2,6 +2,7 @@
   (:require [clojure.string :as str]
             [ring.cps.protocols :as p])
   (:import [io.undertow Undertow]
+           [io.undertow.io Sender]
            [io.undertow.server HttpHandler HttpServerExchange]
            [io.undertow.util HeaderMap HeaderValues HttpString]
            [java.nio ByteBuffer]
@@ -38,13 +39,13 @@
    :headers        (-> ex .getRequestHeaders get-headers)
    :body           (-> ex .getRequestChannel)})
 
-(extend-type HttpServerExchange
+(extend-type Sender
   p/Writer
-  (write! [exchange data callback]
-    (.send (.getResponseSender exchange) (ByteBuffer/wrap ^bytes data)))
+  (write! [sender data callback]
+    (.send sender (ByteBuffer/wrap ^bytes data)))
   p/Closeable
-  (close! [exchange]
-    (.endExchange exchange)))
+  (close! [sender]
+    (.close sender)))
 
 (defn- add-header! [^HeaderMap header-map ^String key val]
   (if (string? val)
@@ -57,7 +58,7 @@
 (defn- set-response! [^HttpServerExchange exchange response]
   (.setResponseCode exchange (:status response))
   (set-headers! (.getResponseHeaders exchange) (:headers response))
-  (p/send-body! (:body response) exchange))
+  (p/send-body! (:body response) (.getResponseSender exchange)))
 
 (defn- undertow-handler [handler]
   (reify HttpHandler
