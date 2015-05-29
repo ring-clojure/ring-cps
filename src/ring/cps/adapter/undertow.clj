@@ -6,6 +6,8 @@
            [io.undertow.server HttpHandler HttpServerExchange]
            [io.undertow.util HeaderMap HeaderValues HttpString]
            [java.nio ByteBuffer]
+           [java.util.concurrent ConcurrentLinkedQueue]
+           [org.xnio ChannelListener IoUtils Pool Pooled]
            [org.xnio.channels StreamSourceChannel]))
 
 (defn- header-key [^HeaderValues header]
@@ -21,23 +23,57 @@
                        (transient {})
                        header-map)))
 
-(extend-type StreamSourceChannel
-  p/Closeable
-  (close! [channel])
-  p/Reader
-  (read! [channel callback]))
+(defmacro ^:private with-pool [[sym pool] & body]
+  `(let [pooled# (.allocate ~pool)]
+     (try
+       (let [~sym (.getResource pooled#)] ~@body)
+       (finally
+         (.free pooled#)))))
+
+(defn- read-channel [^StreamSourceChannel channel ^Pool buffer-pool callback]
+  (with-pool [^ByteBuffer buffer buffer-pool]
+    (let [res (.read channel buffer)]
+      (when (pos? res)
+        (.flip buffer)
+        (callback buffer))
+      res)))
+
+(defn- read-listener [^ConcurrentLinkedQueue callbacks buffer-pool]
+  (reify ChannelListener
+    (handleEvent [_ channel]
+      (loop []
+        (when-let [callback (.poll callbacks)]
+          (read-channel channel buffer-pool callback)
+          (recur)))
+      (.resumeReads channel))))
+
+(defn- channel-reader [^StreamSourceChannel channel buffer-pool]
+  (let [callbacks (ConcurrentLinkedQueue.)
+        listener  (read-listener callbacks buffer-pool)]
+    (-> channel .getReadSetter (.set listener))
+    (reify
+      p/Closeable
+      (close! [_]
+        (IoUtils/safeClose channel))
+      p/Reader
+      (read! [reader callback]
+        (let [res (read-channel channel buffer-pool callback)]
+          (cond
+            (neg? res)  (p/close! reader)
+            (zero? res) (.add callbacks callback)))))))
 
 (defn- get-request [^HttpServerExchange ex]
-  {:server-port    (-> ex .getDestinationAddress .getPort)
-   :server-name    (-> ex .getHostName)
-   :remote-addr    (-> ex .getSourceAddress .getAddress .getHostAddress)
-   :uri            (-> ex .getRequestURI)
-   :query-string   (-> ex .getQueryString)
-   :scheme         (-> ex .getRequestScheme .toString .toLowerCase keyword)
-   :request-method (-> ex .getRequestMethod .toString .toLowerCase keyword)
-   :protocol       (-> ex .getProtocol .toString)
-   :headers        (-> ex .getRequestHeaders get-headers)
-   :body           (-> ex .getRequestChannel)})
+  (let [buffer-pool (-> ex .getConnection .getBufferPool)]
+    {:server-port    (-> ex .getDestinationAddress .getPort)
+     :server-name    (-> ex .getHostName)
+     :remote-addr    (-> ex .getSourceAddress .getAddress .getHostAddress)
+     :uri            (-> ex .getRequestURI)
+     :query-string   (-> ex .getQueryString)
+     :scheme         (-> ex .getRequestScheme .toString .toLowerCase keyword)
+     :request-method (-> ex .getRequestMethod .toString .toLowerCase keyword)
+     :protocol       (-> ex .getProtocol .toString)
+     :headers        (-> ex .getRequestHeaders get-headers)
+     :body           (-> ex .getRequestChannel (channel-reader buffer-pool))}))
 
 (extend-type Sender
   p/Writer
