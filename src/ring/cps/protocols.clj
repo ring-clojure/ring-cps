@@ -3,18 +3,22 @@
 (defprotocol Closeable
   (close! [x]))
 
-(defprotocol Readable
+(defprotocol Reader
   (read! [x callback]))
 
-(defprotocol Writable
+(defprotocol Writer
   (write! [x data callback]))
 
 (defprotocol ResponseBody
   (send-body! [x writer]))
 
+(defn- noop [])
+
 (extend-protocol ResponseBody
+  nil
+  (send-body! [_ writer]
+    (close! writer))
   String
   (send-body! [string writer]
-    (doto writer
-      (write! (.getBytes string "UTF-8"))
-      (close!))))
+    (write! writer (.getBytes string "UTF-8") noop)
+    (close! writer)))
