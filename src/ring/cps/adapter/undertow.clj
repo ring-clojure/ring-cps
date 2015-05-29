@@ -75,13 +75,14 @@
      :headers        (-> ex .getRequestHeaders get-headers)
      :body           (-> ex .getRequestChannel (channel-reader buffer-pool))}))
 
-(extend-type Sender
-  p/Writer
-  (write! [sender data callback]
-    (.send sender (ByteBuffer/wrap ^bytes data)))
-  p/Closeable
-  (close! [sender]
-    (.close sender)))
+(defn- channel-writer [^Sender sender]
+  (reify
+    p/Closeable
+    (close! [_]
+      (.close sender))
+    p/Writer
+    (write! [_ data callback]
+      (.send sender (ByteBuffer/wrap ^bytes data)))))
 
 (defn- add-header! [^HeaderMap header-map ^String key val]
   (if (string? val)
@@ -94,7 +95,7 @@
 (defn- set-response! [^HttpServerExchange exchange response]
   (.setResponseCode exchange (:status response))
   (set-headers! (.getResponseHeaders exchange) (:headers response))
-  (p/send-body! (:body response) (.getResponseSender exchange)))
+  (p/send-body! (:body response) (channel-writer (.getResponseSender exchange))))
 
 (defn- undertow-handler [handler]
   (reify HttpHandler
