@@ -47,9 +47,11 @@
           (recur)))
       (.resumeReads channel))))
 
-(defn- channel-reader [^StreamSourceChannel channel buffer-pool]
-  (let [callbacks (ConcurrentLinkedQueue.)
-        listener  (read-listener callbacks buffer-pool)]
+(defn- request-reader [^HttpServerExchange exchange]
+  (let [channel     (-> exchange .getRequestChannel)
+        buffer-pool (-> exchange .getConnection .getBufferPool)
+        callbacks   (ConcurrentLinkedQueue.)
+        listener    (read-listener callbacks buffer-pool)]
     (-> channel .getReadSetter (.set listener))
     (reify
       p/Closeable
@@ -63,26 +65,26 @@
             (zero? res) (.add callbacks callback)))))))
 
 (defn- get-request [^HttpServerExchange ex]
-  (let [buffer-pool (-> ex .getConnection .getBufferPool)]
-    {:server-port    (-> ex .getDestinationAddress .getPort)
-     :server-name    (-> ex .getHostName)
-     :remote-addr    (-> ex .getSourceAddress .getAddress .getHostAddress)
-     :uri            (-> ex .getRequestURI)
-     :query-string   (-> ex .getQueryString)
-     :scheme         (-> ex .getRequestScheme .toString .toLowerCase keyword)
-     :request-method (-> ex .getRequestMethod .toString .toLowerCase keyword)
-     :protocol       (-> ex .getProtocol .toString)
-     :headers        (-> ex .getRequestHeaders get-headers)
-     :body           (-> ex .getRequestChannel (channel-reader buffer-pool))}))
+  {:server-port    (-> ex .getDestinationAddress .getPort)
+   :server-name    (-> ex .getHostName)
+   :remote-addr    (-> ex .getSourceAddress .getAddress .getHostAddress)
+   :uri            (-> ex .getRequestURI)
+   :query-string   (-> ex .getQueryString)
+   :scheme         (-> ex .getRequestScheme .toString .toLowerCase keyword)
+   :request-method (-> ex .getRequestMethod .toString .toLowerCase keyword)
+   :protocol       (-> ex .getProtocol .toString)
+   :headers        (-> ex .getRequestHeaders get-headers)
+   :body           (-> ex request-reader)})
 
-(defn- channel-writer [^Sender sender]
-  (reify
-    p/Closeable
-    (close! [_]
-      (.close sender))
-    p/Writer
-    (write! [_ data callback]
-      (.send sender (ByteBuffer/wrap ^bytes data)))))
+(defn- response-writer [^HttpServerExchange exchange]
+  (let [sender (.getResponseSender exchange)]
+    (reify
+      p/Closeable
+      (close! [_]
+        (.close sender))
+      p/Writer
+      (write! [_ data callback]
+        (.send sender (ByteBuffer/wrap ^bytes data))))))
 
 (defn- add-header! [^HeaderMap header-map ^String key val]
   (if (string? val)
@@ -95,7 +97,7 @@
 (defn- set-response! [^HttpServerExchange exchange response]
   (.setResponseCode exchange (:status response))
   (set-headers! (.getResponseHeaders exchange) (:headers response))
-  (p/send-body! (:body response) (channel-writer (.getResponseSender exchange))))
+  (p/send-body! (:body response) (response-writer exchange)))
 
 (defn- undertow-handler [handler]
   (reify HttpHandler
