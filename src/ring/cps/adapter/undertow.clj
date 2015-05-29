@@ -1,10 +1,42 @@
 (ns ring.cps.adapter.undertow
-  (:require [ring.cps.protocols :as p])
-  (:import [java.nio ByteBuffer]
-           [io.undertow Undertow]
+  (:require [clojure.string :as str]
+            [ring.cps.protocols :as p])
+  (:import [io.undertow Undertow]
            [io.undertow.server HttpHandler HttpServerExchange]
-           [io.undertow.util HeaderMap HttpString]
-           [org.xnio.channels StreamSinkChannel]))
+           [io.undertow.util HeaderMap HeaderValues HttpString]
+           [java.nio ByteBuffer]
+           [org.xnio.channels StreamSourceChannel]))
+
+(defn- header-key [^HeaderValues header]
+  (-> header .getHeaderName .toString .toLowerCase))
+
+(defn- header-val [^HeaderValues header]
+  (if (> (.size header) 1)
+    (str/join ", " (iterator-seq (.iterator header)))
+    (.get header 0)))
+
+(defn- get-headers [^HeaderMap header-map]
+  (persistent! (reduce #(assoc! %1 (header-key %2) (header-val %2))
+                       (transient {})
+                       header-map)))
+
+(extend-type StreamSourceChannel
+  p/Closeable
+  (close! [channel])
+  p/Reader
+  (read! [channel callback]))
+
+(defn- get-request [^HttpServerExchange ex]
+  {:server-port    (-> ex .getDestinationAddress .getPort)
+   :server-name    (-> ex .getHostName)
+   :remote-addr    (-> ex .getSourceAddress .getAddress .getHostAddress)
+   :uri            (-> ex .getRequestURI)
+   :query-string   (-> ex .getQueryString)
+   :scheme         (-> ex .getRequestScheme .toString .toLowerCase keyword)
+   :request-method (-> ex .getRequestMethod .toString .toLowerCase keyword)
+   :protocol       (-> ex .getProtocol .toString)
+   :headers        (-> ex .getRequestHeaders get-headers)
+   :body           (-> ex .getRequestChannel)})
 
 (extend-type HttpServerExchange
   p/Writer
@@ -30,7 +62,7 @@
 (defn- undertow-handler [handler]
   (reify HttpHandler
     (handleRequest [_ exchange]
-      (handler {} #(set-response! exchange %)))))
+      (handler (get-request exchange) #(set-response! exchange %)))))
 
 (defn- ^Undertow undertow-builder
   [handler {:keys [port host] :or {host "0.0.0.0", port 80}}]
