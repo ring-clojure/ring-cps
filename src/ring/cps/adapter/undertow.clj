@@ -105,10 +105,12 @@
           (IoUtils/safeClose)))
       p/Writer
       (write! [_ data callback]
-        (let [buffer (ByteBuffer/wrap ^bytes data)
-              result (write-channel channel buffer callback)]
-          (when (zero? result)
-            (.add pending [buffer callback])))))))
+        (if (zero? (alength data))
+          (callback 0)
+          (let [buffer (ByteBuffer/wrap ^bytes data)
+                result (write-channel channel buffer callback)]
+            (when (zero? result)
+              (.add pending [buffer callback]))))))))
 
 (defn- add-header! [^HeaderMap header-map ^String key val]
   (if (string? val)
