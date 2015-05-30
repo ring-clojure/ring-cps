@@ -12,7 +12,7 @@
 (defprotocol ResponseBody
   (send-body! [x writer]))
 
-(defn- noop [])
+(defn- noop [_])
 
 (extend-protocol ResponseBody
   nil

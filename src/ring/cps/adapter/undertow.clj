@@ -32,17 +32,17 @@
 
 (defn- read-channel [^StreamSourceChannel channel ^Pool buffer-pool callback]
   (with-pool [^ByteBuffer buffer buffer-pool]
-    (let [res (.read channel buffer)]
-      (when (pos? res)
+    (let [result (.read channel buffer)]
+      (when (pos? result)
         (.flip buffer)
         (callback buffer))
-      res)))
+      result)))
 
-(defn- read-listener [^ConcurrentLinkedQueue callbacks buffer-pool]
+(defn- read-listener [^ConcurrentLinkedQueue pending buffer-pool]
   (reify ChannelListener
     (handleEvent [_ channel]
       (loop []
-        (when-let [callback (.poll callbacks)]
+        (when-let [callback (.poll pending)]
           (read-channel channel buffer-pool callback)
           (recur)))
       (.resumeReads channel))))
@@ -50,8 +50,8 @@
 (defn- request-reader [^HttpServerExchange exchange]
   (let [channel     (-> exchange .getRequestChannel)
         buffer-pool (-> exchange .getConnection .getBufferPool)
-        callbacks   (ConcurrentLinkedQueue.)
-        listener    (read-listener callbacks buffer-pool)]
+        pending     (ConcurrentLinkedQueue.)
+        listener    (read-listener pending buffer-pool)]
     (-> channel .getReadSetter (.set listener))
     (reify
       p/Closeable
@@ -59,10 +59,10 @@
         (IoUtils/safeClose channel))
       p/Reader
       (read! [reader callback]
-        (let [res (read-channel channel buffer-pool callback)]
+        (let [result (read-channel channel buffer-pool callback)]
           (cond
-            (neg? res)  (p/close! reader)
-            (zero? res) (.add callbacks callback)))))))
+            (neg? result)  (p/close! reader)
+            (zero? result) (.add pending callback)))))))
 
 (defn- get-request [^HttpServerExchange ex]
   {:server-port    (-> ex .getDestinationAddress .getPort)
@@ -76,15 +76,39 @@
    :headers        (-> ex .getRequestHeaders get-headers)
    :body           (-> ex request-reader)})
 
+(defn- write-channel [^StreamSourceChannel channel ^ByteBuffer buffer callback]
+  (let [result (.write channel buffer)]
+     (when (pos? result)
+       (callback result))
+     result))
+
+(defn- write-listener [^ConcurrentLinkedQueue pending]
+  (reify ChannelListener
+    (handleEvent [_ channel]
+      (loop []
+        (when-let [[data callback] (.poll pending)]
+          (write-channel channel data callback)
+          (recur)))
+      (.resumeWrites channel))))
+
 (defn- response-writer [^HttpServerExchange exchange]
-  (let [sender (.getResponseSender exchange)]
+  (let [channel  (-> exchange .getResponseChannel)
+        pending  (ConcurrentLinkedQueue.)
+        listener (write-listener pending)]
+    (-> channel .getWriteSetter (.set listener))
     (reify
       p/Closeable
       (close! [_]
-        (.close sender))
+        (doto channel
+          (.shutdownWrites)
+          (.flush)
+          (IoUtils/safeClose)))
       p/Writer
       (write! [_ data callback]
-        (.send sender (ByteBuffer/wrap ^bytes data))))))
+        (let [buffer (ByteBuffer/wrap ^bytes data)
+              result (write-channel channel buffer callback)]
+          (when (zero? result)
+            (.add pending [buffer callback])))))))
 
 (defn- add-header! [^HeaderMap header-map ^String key val]
   (if (string? val)
