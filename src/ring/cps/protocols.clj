@@ -1,4 +1,5 @@
-(ns ring.cps.protocols)
+(ns ring.cps.protocols
+  (:import [java.nio ByteBuffer]))
 
 (defprotocol Closeable
   (close! [x]))
@@ -20,5 +21,5 @@
     (close! writer))
   String
   (send-body! [string writer]
-    (write! writer (.getBytes string "UTF-8") noop)
+    (write! writer (ByteBuffer/wrap (.getBytes string "UTF-8")) noop)
     (close! writer)))

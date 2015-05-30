@@ -104,11 +104,10 @@
           (.flush)
           (IoUtils/safeClose)))
       p/Writer
-      (write! [_ data callback]
-        (if (zero? (alength data))
+      (write! [_ buffer callback]
+        (if (zero? (.remaining ^ByteBuffer buffer))
           (callback 0)
-          (let [buffer (ByteBuffer/wrap ^bytes data)
-                result (write-channel channel buffer callback)]
+          (let [result (write-channel channel buffer callback)]
             (when (zero? result)
               (.add pending [buffer callback]))))))))
 
