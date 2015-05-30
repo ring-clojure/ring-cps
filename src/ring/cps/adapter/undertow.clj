@@ -1,14 +1,14 @@
 (ns ring.cps.adapter.undertow
   (:require [clojure.string :as str]
             [ring.cps.protocols :as p])
-  (:import [io.undertow Undertow]
+  (:import [io.undertow Undertow Undertow$Builder]
            [io.undertow.io Sender]
            [io.undertow.server HttpHandler HttpServerExchange]
            [io.undertow.util HeaderMap HeaderValues HttpString]
            [java.nio ByteBuffer]
            [java.util.concurrent ConcurrentLinkedQueue]
            [org.xnio ChannelListener IoUtils Pool Pooled]
-           [org.xnio.channels StreamSourceChannel]))
+           [org.xnio.channels StreamSinkChannel StreamSourceChannel]))
 
 (defn- header-key [^HeaderValues header]
   (-> header .getHeaderName .toString .toLowerCase))
@@ -45,7 +45,7 @@
         (when-let [callback (.poll pending)]
           (read-channel channel buffer-pool callback)
           (recur)))
-      (.resumeReads channel))))
+      (.resumeReads ^StreamSourceChannel channel))))
 
 (defn- request-reader [^HttpServerExchange exchange]
   (let [channel     (-> exchange .getRequestChannel)
@@ -76,7 +76,7 @@
    :headers        (-> ex .getRequestHeaders get-headers)
    :body           (-> ex request-reader)})
 
-(defn- write-channel [^StreamSourceChannel channel ^ByteBuffer buffer callback]
+(defn- write-channel [^StreamSinkChannel channel ^ByteBuffer buffer callback]
   (let [result (.write channel buffer)]
      (when (pos? result)
        (callback result))
@@ -89,7 +89,7 @@
         (when-let [[data callback] (.poll pending)]
           (write-channel channel data callback)
           (recur)))
-      (.resumeWrites channel))))
+      (.resumeWrites ^StreamSinkChannel channel))))
 
 (defn- response-writer [^HttpServerExchange exchange]
   (let [channel  (-> exchange .getResponseChannel)
@@ -129,12 +129,14 @@
     (handleRequest [_ exchange]
       (handler (get-request exchange) #(set-response! exchange %)))))
 
-(defn- ^Undertow undertow-builder
+(defn- undertow-builder
   [handler {:keys [port host] :or {host "0.0.0.0", port 80}}]
   (doto (Undertow/builder)
     (.addHttpListener port host)
     (.setHandler (undertow-handler handler))))
 
 (defn run-undertow [handler options]
-  (doto (.build (undertow-builder handler options))
-    (.start)))
+  (let [builder ^Undertow$Builder (undertow-builder handler options)
+        server  (.build builder)]
+    (.start server)
+    server))
