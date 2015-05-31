@@ -6,6 +6,7 @@
            [io.undertow.server HttpHandler HttpServerExchange]
            [io.undertow.util HeaderMap HeaderValues HttpString]
            [java.nio ByteBuffer]
+           [java.nio.channels ReadableByteChannel]
            [java.util.concurrent ConcurrentLinkedQueue]
            [org.xnio ChannelListener IoUtils Pool Pooled]
            [org.xnio.channels StreamSinkChannel StreamSourceChannel]))
@@ -30,28 +31,33 @@
        (finally
          (.free pooled#)))))
 
-(defn- read-channel [^StreamSourceChannel channel ^Pool buffer-pool callback]
-  (with-pool [^ByteBuffer buffer buffer-pool]
-    (let [result (.read channel buffer)]
-      (when (pos? result)
-        (.flip buffer)
-        (callback buffer))
-      result)))
+(defn- read-channel
+  [^ReadableByteChannel channel ^Pool buffer-pool ^ConcurrentLinkedQueue pending]
+  (locking channel
+    (with-pool [^ByteBuffer buffer buffer-pool]
+      (loop []
+        (when-let [callback (.peek pending)]
+          (let [result (.read channel buffer)]
+            (cond
+              (neg? result)
+              (do (.clear pending)
+                  (IoUtils/safeClose channel))
+              (pos? result)
+              (do (.poll pending)
+                  (doto buffer .flip callback .clear)
+                  (recur)))))))))
 
-(defn- read-listener [^ConcurrentLinkedQueue pending buffer-pool]
+(defn- read-listener [buffer-pool pending]
   (reify ChannelListener
     (handleEvent [_ channel]
-      (loop []
-        (when-let [callback (.poll pending)]
-          (read-channel channel buffer-pool callback)
-          (recur)))
+      (read-channel channel buffer-pool pending)
       (.resumeReads ^StreamSourceChannel channel))))
 
 (defn- request-reader [^HttpServerExchange exchange]
   (let [channel     (-> exchange .getRequestChannel)
         buffer-pool (-> exchange .getConnection .getBufferPool)
         pending     (ConcurrentLinkedQueue.)
-        listener    (read-listener pending buffer-pool)]
+        listener    (read-listener buffer-pool pending)]
     (-> channel .getReadSetter (.set listener))
     (reify
       p/Closeable
@@ -59,10 +65,8 @@
         (IoUtils/safeClose channel))
       p/Reader
       (read! [reader callback]
-        (let [result (read-channel channel buffer-pool callback)]
-          (cond
-            (neg? result)  (p/close! reader)
-            (zero? result) (.add pending callback)))))))
+        (.add pending callback)
+        (.wakeupReads channel)))))
 
 (defn- get-request [^HttpServerExchange ex]
   {:server-port    (-> ex .getDestinationAddress .getPort)
