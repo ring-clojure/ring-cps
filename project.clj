@@ -4,4 +4,6 @@
   :license {:name "The MIT License"
             :url "http://opensource.org/licenses/MIT"}
   :dependencies [[org.clojure/clojure "1.6.0"]
-                 [io.undertow/undertow-core "1.1.0.Final"]])
+                 [io.undertow/undertow-core "1.1.0.Final"]]
+  :profiles
+  {:dev {:dependencies [[criterium "0.4.3"]]}})
