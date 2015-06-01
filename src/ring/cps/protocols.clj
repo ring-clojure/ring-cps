@@ -13,13 +13,11 @@
 (defprotocol ResponseBody
   (send-body! [x writer]))
 
-(defn- noop [_])
-
 (extend-protocol ResponseBody
   nil
   (send-body! [_ writer]
     (close! writer))
   String
   (send-body! [string writer]
-    (write! writer (ByteBuffer/wrap (.getBytes string "UTF-8")) noop)
-    (close! writer)))
+    (let [buffer (ByteBuffer/wrap (.getBytes string "UTF-8"))]
+      (write! writer buffer #(close! writer)))))
