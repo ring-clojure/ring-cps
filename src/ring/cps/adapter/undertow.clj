@@ -105,6 +105,14 @@
       (write-channel channel pending)
       (.resumeWrites ^StreamSinkChannel channel))))
 
+(def flush-listener
+  (reify ChannelListener
+    (handleEvent [_ channel]
+      (let [^StreamSinkChannel ch channel]
+        (if (.flush channel)
+          (IoUtils/safeClose channel)
+          (.resumeWrites channel))))))
+
 (defn- response-writer [^HttpServerExchange exchange]
   (let [channel  (-> exchange .getResponseChannel)
         pending  (ConcurrentLinkedQueue.)
@@ -113,10 +121,10 @@
     (reify
       p/Closeable
       (close! [_]
-        (doto channel
-          (.shutdownWrites)
-          (.flush)
-          (IoUtils/safeClose)))
+        (-> channel .getWriteSetter (.set flush-listener))
+        (.shutdownWrites channel)
+        (if (.flush channel)
+          (IoUtils/safeClose channel)))
       p/Writer
       (write! [_ buffer callback]
         (.add pending [buffer callback])
