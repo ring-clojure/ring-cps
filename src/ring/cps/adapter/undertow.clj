@@ -6,7 +6,7 @@
            [io.undertow.server HttpHandler HttpServerExchange]
            [io.undertow.util HeaderMap HeaderValues HttpString]
            [java.nio ByteBuffer]
-           [java.nio.channels ReadableByteChannel]
+           [java.nio.channels ReadableByteChannel WritableByteChannel]
            [java.util.concurrent ConcurrentLinkedQueue]
            [org.xnio ChannelListener IoUtils Pool Pooled]
            [org.xnio.channels StreamSinkChannel StreamSourceChannel]))
@@ -31,17 +31,25 @@
        (finally
          (.free pooled#)))))
 
-(defn- read-channel
-  [^ReadableByteChannel channel ^Pool buffer-pool ^ConcurrentLinkedQueue pending]
-  (locking channel
+(defmacro ^:private with-channel [[sym channel] & body]
+  `(let [ch# ~channel]
+     (locking ch#
+       (try
+         (let [~sym ch#] ~@body)
+         (catch Exception ex#
+           (IoUtils/safeClose ch#)
+           (throw ex#))))))
+
+(defn- read-channel [channel ^Pool buffer-pool ^ConcurrentLinkedQueue pending]
+  (with-channel [^ReadableByteChannel ch channel]
     (with-pool [^ByteBuffer buffer buffer-pool]
       (loop []
         (when-let [callback (.peek pending)]
-          (let [result (.read channel buffer)]
+          (let [result (.read ch buffer)]
             (cond
               (neg? result)
               (do (.clear pending)
-                  (IoUtils/safeClose channel))
+                  (IoUtils/safeClose ch))
               (pos? result)
               (do (.poll pending)
                   (doto buffer .flip callback .clear)
@@ -80,7 +88,7 @@
    :headers        (-> ex .getRequestHeaders get-headers)
    :body           (-> ex request-reader)})
 
-(defn- write-channel [^StreamSinkChannel channel ^ByteBuffer buffer callback]
+(defn- write-channel [^WritableByteChannel channel ^ByteBuffer buffer callback]
   (let [result (.write channel buffer)]
      (when (pos? result)
        (callback result))
