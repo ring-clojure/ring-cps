@@ -88,19 +88,21 @@
    :headers        (-> ex .getRequestHeaders get-headers)
    :body           (-> ex request-reader)})
 
-(defn- write-channel [^WritableByteChannel channel ^ByteBuffer buffer callback]
-  (let [result (.write channel buffer)]
-     (when (pos? result)
-       (callback result))
-     result))
+(defn- write-channel [channel ^ConcurrentLinkedQueue pending]
+  (with-channel [^WritableByteChannel ch channel]
+    (loop []
+      (when-let [[^ByteBuffer buffer callback] (.peek pending)]
+        (while (and (.remaining buffer)
+                    (pos? (.write channel buffer))))
+        (when (zero? (.remaining buffer))
+          (.poll pending)
+          (callback)
+          (recur))))))
 
-(defn- write-listener [^ConcurrentLinkedQueue pending]
+(defn- write-listener [pending]
   (reify ChannelListener
     (handleEvent [_ channel]
-      (loop []
-        (when-let [[data callback] (.poll pending)]
-          (write-channel channel data callback)
-          (recur)))
+      (write-channel channel pending)
       (.resumeWrites ^StreamSinkChannel channel))))
 
 (defn- response-writer [^HttpServerExchange exchange]
@@ -117,11 +119,8 @@
           (IoUtils/safeClose)))
       p/Writer
       (write! [_ buffer callback]
-        (if (zero? (.remaining ^ByteBuffer buffer))
-          (callback 0)
-          (let [result (write-channel channel buffer callback)]
-            (when (zero? result)
-              (.add pending [buffer callback]))))))))
+        (.add pending [buffer callback])
+        (.wakeupWrites channel)))))
 
 (defn- add-header! [^HeaderMap header-map ^String key val]
   (if (string? val)
