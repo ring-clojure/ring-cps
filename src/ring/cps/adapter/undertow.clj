@@ -31,29 +31,27 @@
        (finally
          (.free pooled#)))))
 
-(defmacro ^:private with-channel [[sym channel] & body]
-  `(let [ch# ~channel]
-     (locking ch#
-       (try
-         (let [~sym ch#] ~@body)
-         (catch Exception ex#
-           (IoUtils/safeClose ch#)
-           (throw ex#))))))
-
-(defn- read-channel [channel ^Pool buffer-pool ^ConcurrentLinkedQueue pending]
-  (with-channel [^ReadableByteChannel ch channel]
+(defn- read-channel
+  [^ReadableByteChannel channel ^Pool buffer-pool ^ConcurrentLinkedQueue pending]
+  (locking channel
     (with-pool [^ByteBuffer buffer buffer-pool]
       (loop []
         (when-let [callback (.peek pending)]
-          (let [result (.read ch buffer)]
+          (let [result (try
+                         (.read channel buffer)
+                         (catch Exception ex ex))]
             (cond
-              (neg? result)
-              (do (.clear pending)
-                  (IoUtils/safeClose ch))
               (pos? result)
               (do (.poll pending)
-                  (doto buffer .flip callback .clear)
-                  (recur)))))))))
+                  (doto buffer .flip (callback nil) .clear)
+                  (recur))
+              (neg? result)
+              (do (.clear pending)
+                  (IoUtils/safeClose channel))
+              (instance? Exception result)
+              (do (.poll pending)
+                  (doto buffer .flip (callback result) .clear)
+                  (IoUtils/safeClose channel)))))))))
 
 (defn- read-listener [buffer-pool pending]
   (reify ChannelListener
@@ -88,16 +86,29 @@
    :headers        (-> ex .getRequestHeaders get-headers)
    :body           (-> ex request-reader)})
 
+(defn- write-buffer [^WritableByteChannel channel ^ByteBuffer buffer]
+  (loop []
+    (let [result (try
+                   (.write channel buffer)
+                   (catch Exception ex))]
+      (if (pos? result)
+        (recur)
+        result))))
+
 (defn- write-channel [channel ^ConcurrentLinkedQueue pending]
-  (with-channel [^WritableByteChannel ch channel]
+  (locking channel
     (loop []
-      (when-let [[^ByteBuffer buffer callback] (.peek pending)]
-        (while (and (.remaining buffer)
-                    (pos? (.write channel buffer))))
-        (when (zero? (.remaining buffer))
-          (.poll pending)
-          (callback)
-          (recur))))))
+      (when-let [[buffer callback] (.peek pending)]
+        (let [result (write-buffer channel buffer)]
+          (cond
+            (instance? Exception result)
+            (do (.poll pending)
+                (IoUtils/safeClose channel)
+                (callback false result))
+            (not (.hasRemaining buffer))
+            (do (.poll pending)
+                (callback true nil)
+                (recur))))))))
 
 (defn- write-listener [pending]
   (reify ChannelListener

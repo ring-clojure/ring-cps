@@ -20,4 +20,4 @@
   String
   (send-body! [string writer]
     (let [buffer (ByteBuffer/wrap (.getBytes string "UTF-8"))]
-      (write! writer buffer #(close! writer)))))
+      (write! writer buffer (fn [_ _] (close! writer))))))
